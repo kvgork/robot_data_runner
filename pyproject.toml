@@ -1,0 +1,39 @@
+[project]
+name = "robot-data-runner"
+version = "0.1.0"
+description = "Standalone CLI for running a trained LeRobot policy on the real SO-101 follower arm with stacked safety clamps."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy",
+    # Soft-imported at runtime (not hard-pinned):
+    #   - lerobot >= 0.5  (datasets, policies, SO101Follower driver)
+    #   - torch          (model inference)
+]
+
+[project.optional-dependencies]
+lerobot = ["lerobot"]
+all = ["lerobot"]
+
+[project.scripts]
+robot-data-run = "robot_data_runner.cli:main"
+robot-data-run-check = "robot_data_runner.check_policy:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/robot_data_runner"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP"]
+ignore = ["E501"]  # line-length handled by formatter
