@@ -18,6 +18,7 @@ all = ["lerobot"]
 [project.scripts]
 robot-data-run = "robot_data_runner.cli:main"
 robot-data-run-check = "robot_data_runner.check_policy:main"
+robot-data-run-eval = "robot_data_runner.cli_eval:main"
 
 [build-system]
 requires = ["hatchling"]
