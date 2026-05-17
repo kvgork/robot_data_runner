@@ -4,8 +4,8 @@
 policy on the real SO-101 follower arm. Sibling of `robot-data-recorder`
 (opposite direction: teleop → dataset).
 
-**Bare repo / working tree:** `~/workspaces/spinouts/robot_data_runner/`
-(working tree, NOT bare — matches `robot_data_recorder` convention).
+**Upstream:** [`github.com/kvgork/robot_data_runner`](https://github.com/kvgork/robot_data_runner).
+Sibling of `robot_data_recorder` (opposite direction: teleop → dataset).
 
 **Install path in workspace:**
 ```bash
@@ -113,6 +113,6 @@ re-export). All tests pass without lerobot/torch installed.
 ## References
 
 - Training-workspace runbook: `docs/runbook/10-deploy-to-hardware.md`
-- Sibling package: `~/workspaces/spinouts/robot_data_recorder/`
+- Sibling package: [`robot_data_recorder`](https://github.com/kvgork/robot_data_recorder)
 - Upstream driver: `lerobot.robots.so_follower.SO101Follower`
 - Original implementation (kept as re-export): `lerobot_isaac_adapters.deploy`

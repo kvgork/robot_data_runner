@@ -28,7 +28,7 @@ pixi run -e train-policy pip install -e src/robot-data-runner
 Standalone (outside the workspace):
 
 ```bash
-git clone https://github.com/kvgork/robot-data-runner.git    # future
+git clone https://github.com/kvgork/robot_data_runner.git
 cd robot-data-runner
 python3 -m pip install -e .
 python3 -m pip install lerobot                                # heavy dep
@@ -42,13 +42,13 @@ python3 -m pip install lerobot                                # heavy dep
 # 1. Pre-flight — load checkpoint, dump expected schema. No hardware needed.
 robot-data-run-check \
     --policy-path outputs/.../pretrained_model \
-    --dataset-root datasets/kvgork/so101-pickplace1
+    --dataset-root datasets/<your-hf-user>/so101-pickplace1
 
 # 2. DRY-RUN — connects, reads obs, runs policy, prints actions, NO motor writes.
 robot-data-run \
     --policy-path outputs/.../pretrained_model \
     --port /dev/ttyACM0 \
-    --dataset-root datasets/kvgork/so101-pickplace1 \
+    --dataset-root datasets/<your-hf-user>/so101-pickplace1 \
     --camera d435_rgb=/dev/video0,640,480 \
     --duration-s 30 -v
 
@@ -56,7 +56,7 @@ robot-data-run \
 robot-data-run \
     --policy-path outputs/.../pretrained_model \
     --port /dev/ttyACM0 \
-    --dataset-root datasets/kvgork/so101-pickplace1 \
+    --dataset-root datasets/<your-hf-user>/so101-pickplace1 \
     --camera d435_rgb=/dev/video0,640,480 \
     --execute \
     --max-relative-target 3.0 \
@@ -83,7 +83,7 @@ from robot_data_runner import (
 cfg = RunnerConfig(
     policy_path=Path("/abs/path/to/pretrained_model"),
     port="/dev/ttyACM0",
-    dataset_root=Path("/abs/path/to/datasets/kvgork/so101-pickplace1"),
+    dataset_root=Path("/abs/path/to/datasets/<your-hf-user>/so101-pickplace1"),
     cameras={"d435_rgb": ("/dev/video0", 640, 480)},
     execute=False,           # dry-run
     max_relative_target=3.0,
