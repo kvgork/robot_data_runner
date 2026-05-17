@@ -10,7 +10,7 @@ from __future__ import annotations
 from typing import Any
 
 
-def obs_to_policy_input(obs: dict, device: str) -> dict:
+def obs_to_policy_input(obs: dict, device: str, task: str | None = None) -> dict:
     """Convert SO101Follower.get_observation() output to a batched policy input.
 
     ``SO101Follower`` returns a flat dict::
@@ -22,7 +22,15 @@ def obs_to_policy_input(obs: dict, device: str) -> dict:
         {
             "observation.state":              torch.Tensor (1, D) float32,
             "observation.images.<camera>":    torch.Tensor (1, C, H, W) float32 ∈ [0, 1],
+            "task":                            str (only when ``task`` is non-None),
         }
+
+    The ``task`` string is the natural-language instruction (e.g.
+    "pick and place cube") that VLA policies tokenise via the
+    checkpoint's ``tokenizer_processor`` step. Required for SmolVLA
+    (without it, ``select_action`` crashes with KeyError on
+    ``observation.language.tokens``). Harmless for ACT / Diffusion —
+    their preprocessors ignore the field.
     """
     import numpy as np
     import torch
@@ -42,6 +50,8 @@ def obs_to_policy_input(obs: dict, device: str) -> dict:
             torch.from_numpy(arr).unsqueeze(0).to(device).float() / 255.0
         )
         out[f"observation.images.{k}"] = tensor
+    if task is not None:
+        out["task"] = task
     return out
 
 

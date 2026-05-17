@@ -53,6 +53,10 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--task-label", default="so101-closed-loop")
     p.add_argument("--n-train-eps", type=int, default=None,
                    help="metadata only — how many training eps the policy saw")
+    p.add_argument("--task", default=None,
+                   help="Language instruction passed to the policy each step. "
+                        "Required for VLA policies (SmolVLA). Match the "
+                        "training task string.")
     p.add_argument("--i-have-read-the-safety-runbook", action="store_true",
                    help="one-time consent; stores marker in ~/.config/robot-data-runner/safety_ack")
     return p
@@ -98,6 +102,7 @@ def main(argv: list[str] | None = None) -> int:
         repeat_warn_steps=args.repeat_warn_steps,
         seed=args.seed,
         verbose=args.verbose,
+        task=args.task,
     )
 
     spec_kwargs: dict = {"timeout_s": args.duration_per_episode_s}

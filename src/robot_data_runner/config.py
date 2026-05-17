@@ -50,6 +50,14 @@ class RunnerConfig:
         Torch seed for non-deterministic policy layers.
     verbose:
         Log every predicted action.
+    task:
+        Natural-language task instruction passed to the policy each step.
+        REQUIRED for VLA policies (SmolVLA / OpenVLA) — without it, the
+        preprocessor cannot build ``observation.language.tokens`` and
+        ``select_action`` crashes. Match the string used during training
+        (look at ``meta/tasks.parquet`` of the source dataset; for
+        kvgork/so101-pickplace1 it is ``"pick and place cube"``).
+        Ignored by ACT / Diffusion policies.
     """
 
     policy_path: Path
@@ -65,6 +73,7 @@ class RunnerConfig:
     repeat_warn_steps: int = 30
     seed: int = 42
     verbose: bool = False
+    task: str | None = None
 
     def __post_init__(self) -> None:
         if isinstance(self.policy_path, str):

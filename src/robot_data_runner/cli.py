@@ -58,6 +58,16 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--repeat-warn-steps", type=int, default=30)
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("-v", "--verbose", action="store_true")
+    p.add_argument(
+        "--task",
+        default=None,
+        help=(
+            "Natural-language task instruction passed to the policy each step. "
+            "Required for VLA policies (SmolVLA, OpenVLA). Must match the "
+            "training task string — for kvgork/so101-pickplace1 the training "
+            "string is 'pick and place cube'."
+        ),
+    )
     return p
 
 
@@ -81,6 +91,7 @@ def main(argv: list[str] | None = None) -> int:
         repeat_warn_steps=args.repeat_warn_steps,
         seed=args.seed,
         verbose=args.verbose,
+        task=args.task,
     )
     return run_policy(cfg)
 

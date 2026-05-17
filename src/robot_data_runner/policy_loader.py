@@ -13,11 +13,21 @@ from typing import Any
 
 @dataclass
 class LoadedPolicy:
-    """Container for a ready-to-call policy + its device + metadata source."""
+    """Container for a ready-to-call policy + its device + metadata source.
+
+    ``preprocessor`` / ``postprocessor`` are the lerobot 0.5
+    ``PolicyProcessorPipeline`` objects loaded from the checkpoint.
+    They MUST be applied around ``select_action`` because policies like
+    SmolVLA depend on the preprocessor's ``tokenizer_processor`` step to
+    convert ``obs['task']`` (a string) into
+    ``observation.language.tokens`` before the model forward pass.
+    """
 
     policy: Any
     device: str
     ds_meta: Any | None
+    preprocessor: Any = None
+    postprocessor: Any = None
 
 
 def load_policy(
@@ -46,7 +56,7 @@ def load_policy(
         ) from exc
     try:
         from lerobot.configs.policies import PreTrainedConfig
-        from lerobot.policies.factory import make_policy
+        from lerobot.policies.factory import make_policy, make_pre_post_processors
     except ImportError as exc:  # noqa: BLE001
         raise ImportError(
             "lerobot >= 0.5 is required. Install with: pip install lerobot"
@@ -71,4 +81,26 @@ def load_policy(
     policy = make_policy(cfg, ds_meta=ds_meta)
     policy.to(device)
     policy.eval()
-    return LoadedPolicy(policy=policy, device=device, ds_meta=ds_meta)
+
+    # Load the preprocessor / postprocessor pipelines from the checkpoint.
+    # Required for SmolVLA's language path (tokenizer_processor); harmless
+    # for ACT / diffusion (they still need normalization).
+    try:
+        preprocessor, postprocessor = make_pre_post_processors(
+            cfg,
+            pretrained_path=str(policy_path),
+            dataset_stats=getattr(ds_meta, "stats", None),
+        )
+    except Exception:  # noqa: BLE001
+        # Older lerobot or unusual checkpoint: keep going without
+        # processors. select_action may still work for ACT/diffusion.
+        preprocessor = None
+        postprocessor = None
+
+    return LoadedPolicy(
+        policy=policy,
+        device=device,
+        ds_meta=ds_meta,
+        preprocessor=preprocessor,
+        postprocessor=postprocessor,
+    )

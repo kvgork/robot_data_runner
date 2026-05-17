@@ -113,8 +113,14 @@ def run_policy(cfg: RunnerConfig, loaded: LoadedPolicy | None = None) -> int:
 
             try:
                 with torch.no_grad():
-                    pol_in = obs_to_policy_input(obs, loaded.device)
+                    pol_in = obs_to_policy_input(
+                        obs, loaded.device, task=cfg.task
+                    )
+                    if loaded.preprocessor is not None:
+                        pol_in = loaded.preprocessor(pol_in)
                     action = loaded.policy.select_action(pol_in)
+                    if loaded.postprocessor is not None:
+                        action = loaded.postprocessor(action)
                 action_dict = action_to_robot_dict(action, motor_names)
             except Exception as exc:  # noqa: BLE001
                 logger.error("policy inference failed: %s", exc)
