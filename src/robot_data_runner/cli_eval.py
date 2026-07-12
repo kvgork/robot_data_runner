@@ -8,7 +8,7 @@ import sys
 from pathlib import Path
 
 from .cli import _parse_camera_spec
-from .config import RunnerConfig
+from .config import RunnerConfig, quiet_hf_hub
 from .episode_runner import run_episodes
 from .task_specs import make_task_spec
 
@@ -33,6 +33,12 @@ def _build_parser() -> argparse.ArgumentParser:
                    help="default LOWER than open-loop deploy (3 deg vs 5)")
     p.add_argument("--use-degrees", action="store_true")
     p.add_argument("--home-on-exit", action="store_true")
+    p.add_argument(
+        "--id",
+        dest="robot_id",
+        default=None,
+        help="Fixed SO-101 follower calibration id (so_follower/<id>.json).",
+    )
     p.add_argument("--repeat-warn-steps", type=int, default=30)
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("-v", "--verbose", action="store_true")
@@ -79,6 +85,7 @@ def _ensure_safety_ack(consent_flag: bool) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+    quiet_hf_hub()  # stop per-load HF cache revalidation HTTP spam (after basicConfig)
     args = _build_parser().parse_args(argv)
 
     _ensure_safety_ack(args.i_have_read_the_safety_runbook)
@@ -103,6 +110,7 @@ def main(argv: list[str] | None = None) -> int:
         seed=args.seed,
         verbose=args.verbose,
         task=args.task,
+        robot_id=args.robot_id,
     )
 
     spec_kwargs: dict = {"timeout_s": args.duration_per_episode_s}

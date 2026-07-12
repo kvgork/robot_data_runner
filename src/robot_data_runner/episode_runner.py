@@ -27,7 +27,11 @@ from pathlib import Path
 from typing import Any
 
 from .config import RunnerConfig
-from .mappers import action_to_robot_dict, obs_to_policy_input
+from .mappers import (
+    action_to_robot_dict,
+    obs_to_policy_input,
+    resolve_state_mapping,
+)
 from .policy_loader import LoadedPolicy, load_policy
 from .runner import _build_robot
 from .safety import SafetyMonitor
@@ -77,6 +81,23 @@ def run_episodes(
     robot.connect()
 
     motor_names = list(robot.bus.motors)
+    # Same audited state-layout resolution as run_policy: canonical order +
+    # expected dim + verified zero-pad. Closed-loop eval always writes motors
+    # (execute forced True upstream), so require_execute=True.
+    try:
+        state_order, expected_state_dim = resolve_state_mapping(
+            loaded.policy, loaded.ds_meta, motor_names, require_execute=cfg.execute
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.error("state mapping unsafe, refusing closed-loop eval: %s", exc)
+        try:
+            robot.disconnect()
+        except Exception:  # noqa: BLE001
+            pass
+        raise
+    logger.info(
+        "state mapping: order=%s expected_state_dim=%s", state_order, expected_state_dim
+    )
     dt = 1.0 / cfg.rate_hz
     records: list[EpisodeRecord] = []
     interrupted = False
@@ -112,7 +133,11 @@ def run_episodes(
                 try:
                     with torch.no_grad():
                         pol_in = obs_to_policy_input(
-                            obs, loaded.device, task=cfg.task
+                            obs,
+                            loaded.device,
+                            task=cfg.task,
+                            motor_order=motor_names,
+                            state_dim=expected_state_dim,
                         )
                         if loaded.preprocessor is not None:
                             pol_in = loaded.preprocessor(pol_in)

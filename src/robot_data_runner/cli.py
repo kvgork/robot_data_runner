@@ -7,7 +7,7 @@ import logging
 import sys
 from pathlib import Path
 
-from .config import RunnerConfig
+from .config import RunnerConfig, quiet_hf_hub
 from .runner import run_policy
 
 logger = logging.getLogger(__name__)
@@ -55,6 +55,26 @@ def _build_parser() -> argparse.ArgumentParser:
         help="enable real motor writes (default = dry-run)",
     )
     p.add_argument("--home-on-exit", action="store_true")
+    p.add_argument(
+        "--id",
+        dest="robot_id",
+        default=None,
+        help=(
+            "Fixed SO-101 follower calibration id. Calibration is saved to / "
+            "loaded from <HF_LEROBOT_CALIBRATION>/robots/so_follower/<id>.json, "
+            "so it persists across runs instead of an anonymous None.json."
+        ),
+    )
+    p.add_argument(
+        "--actions-out",
+        dest="actions_out",
+        default=None,
+        help=(
+            "Record each step's action to this JSONL file (one record per line) "
+            "for later open-loop replay with `robot-data-run-replay`. Works in "
+            "dry-run too — capture a motors-off trajectory, then replay it."
+        ),
+    )
     p.add_argument("--repeat-warn-steps", type=int, default=30)
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("-v", "--verbose", action="store_true")
@@ -72,6 +92,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    quiet_hf_hub()  # before any lerobot/hf_hub import — stops cache revalidation spam
     args = _build_parser().parse_args(argv)
     cameras: dict[str, tuple[str, int, int]] = {}
     for spec in args.camera:
@@ -92,6 +113,8 @@ def main(argv: list[str] | None = None) -> int:
         seed=args.seed,
         verbose=args.verbose,
         task=args.task,
+        robot_id=args.robot_id,
+        actions_out=args.actions_out,
     )
     return run_policy(cfg)
 

@@ -23,9 +23,9 @@ from __future__ import annotations
 
 from .config import RunnerConfig
 from .episode_runner import run_episodes
-from .policy_loader import load_policy
 from .mappers import action_to_robot_dict, obs_to_policy_input
-from .runner import run_policy
+from .policy_loader import load_policy
+from .runner import run_policy, run_replay, run_sweep
 from .safety import SafetyMonitor
 from .task_specs import (
     GripperAtTargetPoseSpec,
@@ -45,6 +45,8 @@ __all__ = [
     "obs_to_policy_input",
     "action_to_robot_dict",
     "run_policy",
+    "run_replay",
+    "run_sweep",
     "run_episodes",
     "__version__",
 ]
