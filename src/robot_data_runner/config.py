@@ -54,14 +54,39 @@ class RunnerConfig:
         Hard wall-clock cap.
     max_relative_target:
         Per-joint max delta per step (degrees if ``use_degrees`` else
-        normalized units). Server-side clip via FeetechMotorsBus.
+        normalized units). Server-side clip via FeetechMotorsBus. See
+        :func:`robot_data_runner.safety_limits.describe_clamp` for the
+        resolved per-joint deg/step + deg/s this implies — every run path
+        logs that table at startup so the unit mode is never silently
+        ambiguous.
     use_degrees:
-        Bus reads/writes in degrees. Match the units used during training.
+        Bus reads/writes in degrees for the 5 arm joints (the gripper is
+        always ``MotorNormMode.RANGE_0_100`` regardless of this flag — see
+        lerobot's ``SOFollower.__init__``). Defaults to ``True``: degrees
+        make ``max_relative_target`` legible as an actual angular rate
+        (matches lerobot 0.6.0's own ``config_so_follower.py`` default),
+        whereas the legacy normalized mode (-100..100 over the *full*
+        calibrated range) silently turns a small-looking number like ``5.0``
+        into a very large real angular rate on joints with a wide calibrated
+        span (measured: wrist_roll 270 deg/s at mrt=5.0, 30 Hz). Set to
+        ``False`` (CLI: ``--as-normalized``) only for compatibility with
+        checkpoints/recordings captured in the old normalized space.
+    max_deg_per_s_ceiling:
+        Safety refusal threshold. If the resolved worst-joint deg/s implied
+        by ``max_relative_target`` (see ``describe_clamp``) exceeds this and
+        ``execute`` is requested, the run refuses to start rather than
+        silently inheriting a dangerous rate under a unit-mode change or
+        misconfiguration. Override with ``allow_fast=True`` (CLI:
+        ``--allow-fast``).
+    allow_fast:
+        Escape hatch for ``max_deg_per_s_ceiling``. Off by default — the
+        ceiling should be raised deliberately, not routinely bypassed.
     execute:
         If False (default), the loop reads obs and runs the policy but does
         NOT send any motor commands.
     home_on_exit:
-        On SIGINT/SIGTERM (or duration cap), send zero-position before
+        On SIGINT/SIGTERM (or duration cap), ramp to zero position (see
+        :func:`robot_data_runner.safety_limits.ramped_home`) before
         disconnect. Disable when zero pose collides with workspace.
     repeat_warn_steps:
         Stuck-action watchdog threshold.
@@ -86,7 +111,12 @@ class RunnerConfig:
     rate_hz: float = 30.0
     duration_s: float = 60.0
     max_relative_target: float = 5.0
-    use_degrees: bool = False
+    # Degrees by default (S1 fix, 2026-08): legible units + matches lerobot
+    # 0.6.0's own config_so_follower.py default. Pass use_degrees=False (CLI:
+    # --as-normalized) only for the legacy normalized-percent behaviour.
+    use_degrees: bool = True
+    max_deg_per_s_ceiling: float = 90.0
+    allow_fast: bool = False
     execute: bool = False
     home_on_exit: bool = False
     repeat_warn_steps: int = 30
@@ -121,3 +151,5 @@ class RunnerConfig:
             raise ValueError("duration_s must be positive")
         if self.max_relative_target <= 0:
             raise ValueError("max_relative_target must be positive")
+        if self.max_deg_per_s_ceiling <= 0:
+            raise ValueError("max_deg_per_s_ceiling must be positive")

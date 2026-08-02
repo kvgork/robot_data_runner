@@ -5,6 +5,9 @@ the same smooth sine in lerobot's normalized position space, where -100 ==
 calibrated range_min and +100 == range_max. ``--amplitude`` is therefore a
 PERCENT of each joint's calibrated range, centered on the midpoint — so
 ``--amplitude 30`` swings ±30% of range and never approaches the limits.
+``run_sweep`` always drives the bus in normalized mode internally (see its
+docstring) regardless of ``RunnerConfig.use_degrees``, since the whole
+amplitude semantics depend on it.
 
 DRY-RUN by default — pass ``--execute`` for motor writes.
 
@@ -49,19 +52,38 @@ def _build_parser() -> argparse.ArgumentParser:
         default=8.0,
         help="Seconds for one full center→+amp→-amp→center cycle. Default 8.",
     )
-    p.add_argument(
-        "--cycles", type=float, default=2.0, help="Number of sine cycles. Default 2."
-    )
+    p.add_argument("--cycles", type=float, default=2.0, help="Number of sine cycles. Default 2.")
     p.add_argument(
         "--include-gripper",
         action="store_true",
         help="Also sweep the gripper joint (excluded by default).",
     )
+    # NOTE: deliberately NO --as-normalized / --use-degrees flag here (unlike
+    # cli.py / cli_eval.py / cli_replay.py). --amplitude is a percent of each
+    # joint's calibrated range BY DEFINITION (see module docstring above), so
+    # this tool is genuinely normalized-only, not a legacy default that needs
+    # updating — run_sweep() pins use_degrees=False internally regardless of
+    # what RunnerConfig's default is. Do not "fix" this by wiring one in.
     p.add_argument(
         "--max-relative-target",
         type=float,
         default=5.0,
-        help="Per-joint max delta per step (server-side clip). Smaller = safer.",
+        help=(
+            "Per-joint max delta per step (server-side clip), in lerobot's "
+            "normalized (-100..100) unit space — this tool always drives the "
+            "bus in normalized mode. Smaller = safer."
+        ),
+    )
+    p.add_argument(
+        "--allow-fast",
+        action="store_true",
+        help="Override the max-deg-per-s-ceiling startup safety refusal.",
+    )
+    p.add_argument(
+        "--max-deg-per-s-ceiling",
+        type=float,
+        default=90.0,
+        help="Refuse --execute if the resolved worst-joint rate exceeds this (deg/s).",
     )
     p.add_argument(
         "--execute",
@@ -75,9 +97,13 @@ def _build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Fixed SO-101 follower calibration id (so_follower/<id>.json).",
     )
-    p.add_argument("--repeat-warn-steps", type=int, default=10_000,
-                   help="Sweep repeats similar values by design; high default "
-                        "avoids spurious stuck-action warnings.")
+    p.add_argument(
+        "--repeat-warn-steps",
+        type=int,
+        default=10_000,
+        help="Sweep repeats similar values by design; high default "
+        "avoids spurious stuck-action warnings.",
+    )
     p.add_argument("-v", "--verbose", action="store_true")
     return p
 
@@ -91,6 +117,8 @@ def main(argv: list[str] | None = None) -> int:
         rate_hz=args.rate_hz,
         duration_s=1.0,  # unused by sweep (length = period_s*cycles)
         max_relative_target=args.max_relative_target,
+        max_deg_per_s_ceiling=args.max_deg_per_s_ceiling,
+        allow_fast=args.allow_fast,
         execute=args.execute,
         home_on_exit=args.home_on_exit,
         repeat_warn_steps=args.repeat_warn_steps,

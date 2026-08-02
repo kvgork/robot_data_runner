@@ -45,9 +45,48 @@ def _build_parser() -> argparse.ArgumentParser:
         "--max-relative-target",
         type=float,
         default=5.0,
-        help="Per-joint max delta per step (server-side clip). Smaller = safer.",
+        help=(
+            "Per-joint max delta per control step. UNITS: DEGREES by default "
+            "(e.g. 5.0 = 5 deg/step for the 5 arm joints; the gripper is "
+            "always a percent of jaw travel regardless of this flag). Pass "
+            "--as-normalized to revert to lerobot's legacy normalized "
+            "(-100..100 over the FULL calibrated range) unit space instead — "
+            "in that space the same number can imply a much faster real "
+            "angular rate on wide-span joints (e.g. wrist_roll). MUST match "
+            "the unit mode used when the trajectory being replayed was "
+            "recorded/scored, or the comparison is not apples-to-apples. The "
+            "resolved per-joint deg/step + deg/s is always logged at startup "
+            "(see describe_clamp); a run that would exceed "
+            "--max-deg-per-s-ceiling refuses to start unless --allow-fast is "
+            "passed."
+        ),
     )
-    p.add_argument("--use-degrees", action="store_true")
+    p.add_argument(
+        "--as-normalized",
+        action="store_true",
+        help=(
+            "Use lerobot's legacy normalized (-100..100 for the arm joints; "
+            "the gripper is always 0..100) unit space instead of degrees. "
+            "Only for compatibility with checkpoints/recordings captured "
+            "in the old normalized space — degrees (the default) are "
+            "recommended for any new run."
+        ),
+    )
+    p.add_argument(
+        "--allow-fast",
+        action="store_true",
+        help=(
+            "Override the max-deg-per-s-ceiling startup safety refusal. "
+            "Only set this if you have deliberately reviewed the "
+            "describe_clamp banner and accept the resolved per-joint rate."
+        ),
+    )
+    p.add_argument(
+        "--max-deg-per-s-ceiling",
+        type=float,
+        default=90.0,
+        help="Refuse --execute if the resolved worst-joint rate exceeds this (deg/s).",
+    )
     p.add_argument(
         "--execute",
         action="store_true",
@@ -88,7 +127,9 @@ def main(argv: list[str] | None = None) -> int:
         # duration_s is unused by replay (length = #records) but must be > 0.
         duration_s=1.0,
         max_relative_target=args.max_relative_target,
-        use_degrees=args.use_degrees,
+        use_degrees=not args.as_normalized,
+        max_deg_per_s_ceiling=args.max_deg_per_s_ceiling,
+        allow_fast=args.allow_fast,
         execute=args.execute,
         home_on_exit=args.home_on_exit,
         repeat_warn_steps=args.repeat_warn_steps,
