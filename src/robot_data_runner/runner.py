@@ -19,7 +19,7 @@ from . import safety_limits
 from .config import RunnerConfig
 from .mappers import action_to_robot_dict, obs_to_policy_input, resolve_state_mapping
 from .policy_loader import LoadedPolicy, load_policy
-from .safety import SafetyMonitor
+from .safety import SafetyMonitor, attach_hardware_watchdog
 
 logger = logging.getLogger(__name__)
 
@@ -205,6 +205,7 @@ def run_policy(cfg: RunnerConfig, loaded: LoadedPolicy | None = None) -> int:
         logger.error("robot.connect() failed — is the arm plugged in? %s", exc)
         return 4
 
+    attach_hardware_watchdog(monitor, robot, cfg)
     motor_names = list(robot.bus.motors)
 
     rc = _startup_safety_check(cfg, robot)
@@ -280,6 +281,7 @@ def run_policy(cfg: RunnerConfig, loaded: LoadedPolicy | None = None) -> int:
 
             action_dict = _clamp_and_warn(action_dict, limits_lo, limits_hi, clamp_warned)
             monitor.observe(action_dict)
+            monitor.observe_hardware(robot)
             if cfg.verbose:
                 logger.info(
                     "step %d action=%s",
@@ -382,6 +384,7 @@ def run_replay(cfg: RunnerConfig) -> int:
         logger.error("robot.connect() failed — is the arm plugged in? %s", exc)
         return 4
 
+    attach_hardware_watchdog(monitor, robot, cfg)
     motor_names = list(robot.bus.motors)
 
     rc = _startup_safety_check(cfg, robot)
@@ -413,6 +416,7 @@ def run_replay(cfg: RunnerConfig) -> int:
                 continue
             action_dict = _clamp_and_warn(action_dict, limits_lo, limits_hi, clamp_warned)
             monitor.observe(action_dict)
+            monitor.observe_hardware(robot)
             if cfg.verbose:
                 logger.info(
                     "replay step %d action=%s",
@@ -506,6 +510,7 @@ def run_sweep(
         logger.error("robot.connect() failed — is the arm plugged in? %s", exc)
         return 4
 
+    attach_hardware_watchdog(monitor, robot, cfg)
     motor_names = list(robot.bus.motors)
     sweep_joints = [m for m in motor_names if not (exclude_gripper and "gripper" in m.lower())]
     logger.info(
@@ -541,6 +546,7 @@ def run_sweep(
             action_dict = {f"{m}.pos": float(val) for m in sweep_joints}
             action_dict = _clamp_and_warn(action_dict, limits_lo, limits_hi, clamp_warned)
             monitor.observe(action_dict)
+            monitor.observe_hardware(robot)
             if cfg.verbose:
                 logger.info("sweep step %d val=%.2f", n_steps, val)
             if cfg.execute:

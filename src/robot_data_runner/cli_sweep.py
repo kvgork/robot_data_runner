@@ -104,6 +104,29 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Sweep repeats similar values by design; high default "
         "avoids spurious stuck-action warnings.",
     )
+    p.add_argument(
+        "--no-hardware-watchdog",
+        dest="hardware_watchdog",
+        action="store_false",
+        default=True,
+        help=(
+            "Disable the joint-current / thermal watchdog. ON by default — a sweep "
+            "drives joints toward their limits by design, which is exactly when a "
+            "servo stalls, so the current guard matters most here."
+        ),
+    )
+    p.add_argument(
+        "--hw-every-n-steps",
+        type=int,
+        default=15,
+        help="Sample joint current/temperature every N control steps (default 15).",
+    )
+    p.add_argument(
+        "--hw-breach-steps",
+        type=int,
+        default=3,
+        help="Consecutive breached samples before the watchdog trips (default 3).",
+    )
     p.add_argument("-v", "--verbose", action="store_true")
     return p
 
@@ -122,6 +145,9 @@ def main(argv: list[str] | None = None) -> int:
         execute=args.execute,
         home_on_exit=args.home_on_exit,
         repeat_warn_steps=args.repeat_warn_steps,
+        hardware_watchdog=args.hardware_watchdog,
+        hw_every_n_steps=args.hw_every_n_steps,
+        hw_breach_steps=args.hw_breach_steps,
         verbose=args.verbose,
         robot_id=args.robot_id,
     )

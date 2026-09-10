@@ -120,6 +120,14 @@ class RunnerConfig:
     execute: bool = False
     home_on_exit: bool = False
     repeat_warn_steps: int = 30
+    # --- joint-current / thermal watchdog (2026-09-10) ---
+    # The SO-101 has no force sensing, so servo current is the only in-band signal
+    # that the arm is straining. ON by default: trip points are derived from each
+    # servo's own protection registers, so it fires strictly BEFORE the servo's own
+    # protection drops torque mid-episode. Disable with --no-hardware-watchdog.
+    hardware_watchdog: bool = True
+    hw_every_n_steps: int = 15
+    hw_breach_steps: int = 3
     seed: int = 42
     verbose: bool = False
     task: str | None = None

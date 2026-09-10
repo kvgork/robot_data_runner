@@ -51,7 +51,7 @@ from .mappers import (
 )
 from .policy_loader import LoadedPolicy, load_policy
 from .runner import _build_robot, _clamp_and_warn, _home_on_exit, _startup_safety_check
-from .safety import SafetyMonitor, require_interactive
+from .safety import SafetyMonitor, require_interactive, attach_hardware_watchdog
 from .task_specs import TaskSpec
 
 logger = logging.getLogger(__name__)
@@ -181,6 +181,7 @@ def run_episodes(
     monitor.install_signal_handlers()
     robot.connect()
 
+    attach_hardware_watchdog(monitor, robot, cfg)
     motor_names = list(robot.bus.motors)
 
     rc = _startup_safety_check(cfg, robot)
@@ -309,6 +310,7 @@ def run_episodes(
 
                 action_dict = _clamp_and_warn(action_dict, limits_lo, limits_hi, clamp_warned)
                 monitor.observe(action_dict)
+                monitor.observe_hardware(robot)
                 if cfg.verbose:
                     logger.info(
                         "ep%d step action=%s",

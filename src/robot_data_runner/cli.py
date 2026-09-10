@@ -118,6 +118,31 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     p.add_argument("--repeat-warn-steps", type=int, default=30)
+    p.add_argument(
+        "--no-hardware-watchdog",
+        dest="hardware_watchdog",
+        action="store_false",
+        default=True,
+        help=(
+            "Disable the joint-current / thermal watchdog. It is ON by default: the "
+            "SO-101 has no force sensing, so servo current is the only in-band signal "
+            "that the arm is straining against a limit, the table, or a jammed object. "
+            "Trip points are read from each servo's own protection registers, so it "
+            "fires before the servo's protection drops torque mid-episode."
+        ),
+    )
+    p.add_argument(
+        "--hw-every-n-steps",
+        type=int,
+        default=15,
+        help="Sample joint current/temperature every N control steps (default 15 ~= 2 Hz at 30 Hz).",
+    )
+    p.add_argument(
+        "--hw-breach-steps",
+        type=int,
+        default=3,
+        help="Consecutive breached samples before the watchdog trips (default 3).",
+    )
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("-v", "--verbose", action="store_true")
     p.add_argument(
@@ -154,6 +179,9 @@ def main(argv: list[str] | None = None) -> int:
         execute=args.execute,
         home_on_exit=args.home_on_exit,
         repeat_warn_steps=args.repeat_warn_steps,
+        hardware_watchdog=args.hardware_watchdog,
+        hw_every_n_steps=args.hw_every_n_steps,
+        hw_breach_steps=args.hw_breach_steps,
         seed=args.seed,
         verbose=args.verbose,
         task=args.task,
