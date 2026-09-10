@@ -126,7 +126,12 @@ class RunnerConfig:
     # servo's own protection registers, so it fires strictly BEFORE the servo's own
     # protection drops torque mid-episode. Disable with --no-hardware-watchdog.
     hardware_watchdog: bool = True
-    hw_every_n_steps: int = 15
+    # 5 steps @30Hz = 6Hz sampling; with hw_breach_steps=3 a sustained stall trips
+    # in ~0.33s. Was 15 (2Hz, ~1.0-1.5s to trip) when each sample cost 12 serial
+    # round-trips; sync_read batching cut that to 2, so we can afford to look more
+    # often. Adversarial review 2026-09-10 flagged the old latency as too slow for
+    # a stall guard.
+    hw_every_n_steps: int = 5
     hw_breach_steps: int = 3
     seed: int = 42
     verbose: bool = False

@@ -32,8 +32,7 @@ logger = logging.getLogger(__name__)
 # code fix for "signals don't preempt blocking I/O", only an informed
 # operator.
 _NO_ESTOP_BANNER = (
-    "=" * 78
-    + "\nSAFETY: there is NO software e-stop.\n"
+    "=" * 78 + "\nSAFETY: there is NO software e-stop.\n"
     "  Ctrl-C only flips a flag checked between control steps — it will NOT\n"
     "  reliably stop a robot already moving mid-command (a blocked serial\n"
     "  read/write is not interrupted; PEP 475 retries syscalls on EINTR).\n"
@@ -116,6 +115,26 @@ def _startup_safety_check(cfg: RunnerConfig, robot: Any) -> int | None:
         logger.error("refusing to start: %s", exc)
         return 8
     return None
+
+
+def _warn_loop_overrun(over_s: float, dt: float, warned: list[bool]) -> None:
+    """Warn once when the control loop misses its period instead of free-running silently.
+
+    Added 2026-09-10: the loop previously slept only when ``slack > 0`` and did nothing
+    at all when it was negative, so a loop running late — from bus contention, a slow
+    policy, or watchdog sampling — was invisible. On a rate-controlled hardware loop
+    that silence is the bug: the arm is being commanded at a different rate than the
+    one the policy was trained at, and nothing says so.
+    """
+    if warned[0]:
+        return
+    warned[0] = True
+    logger.warning(
+        "control loop overran its %.1f ms period by %.1f ms — the effective rate is "
+        "below the configured rate_hz. Further overruns this run are not logged.",
+        dt * 1000.0,
+        over_s * 1000.0,
+    )
 
 
 def _clamp_and_warn(
@@ -217,6 +236,7 @@ def run_policy(cfg: RunnerConfig, loaded: LoadedPolicy | None = None) -> int:
         return rc
     limits_lo, limits_hi = safety_limits.resolve_joint_limits(robot)
     clamp_warned: set[str] = set()
+    overrun_warned = [False]
 
     # Resolve the state layout (canonical order + expected dim + zero-pad safety)
     # in one audited place. Raises rather than silently permute/mis-pad. The live
@@ -281,7 +301,6 @@ def run_policy(cfg: RunnerConfig, loaded: LoadedPolicy | None = None) -> int:
 
             action_dict = _clamp_and_warn(action_dict, limits_lo, limits_hi, clamp_warned)
             monitor.observe(action_dict)
-            monitor.observe_hardware(robot)
             if cfg.verbose:
                 logger.info(
                     "step %d action=%s",
@@ -310,9 +329,16 @@ def run_policy(cfg: RunnerConfig, loaded: LoadedPolicy | None = None) -> int:
                     break
             n_steps += 1
 
+            # Sampled AFTER send_action: a register read is a blocking serial
+            # round-trip, so doing it earlier would let bus latency delay a motor
+            # command that has already been computed.
+            monitor.observe_hardware(robot)
+
             slack = dt - (time.monotonic() - step_start)
             if slack > 0:
                 time.sleep(slack)
+            else:
+                _warn_loop_overrun(-slack, dt, overrun_warned)
     finally:
         if actions_fh is not None:
             actions_fh.close()
@@ -396,6 +422,7 @@ def run_replay(cfg: RunnerConfig) -> int:
         return rc
     limits_lo, limits_hi = safety_limits.resolve_joint_limits(robot)
     clamp_warned: set[str] = set()
+    overrun_warned = [False]
 
     dt = 1.0 / cfg.rate_hz
     rc = 0
@@ -416,7 +443,6 @@ def run_replay(cfg: RunnerConfig) -> int:
                 continue
             action_dict = _clamp_and_warn(action_dict, limits_lo, limits_hi, clamp_warned)
             monitor.observe(action_dict)
-            monitor.observe_hardware(robot)
             if cfg.verbose:
                 logger.info(
                     "replay step %d action=%s",
@@ -431,9 +457,15 @@ def run_replay(cfg: RunnerConfig) -> int:
                     rc = 7
                     break
             n_steps += 1
+
+            # Sampled AFTER send_action — see the note in run_policy.
+            monitor.observe_hardware(robot)
+
             slack = dt - (time.monotonic() - step_start)
             if slack > 0:
                 time.sleep(slack)
+            else:
+                _warn_loop_overrun(-slack, dt, overrun_warned)
     finally:
         if cfg.home_on_exit and cfg.execute:
             _home_on_exit(robot, motor_names, cfg)
@@ -531,6 +563,7 @@ def run_sweep(
         return rc
     limits_lo, limits_hi = safety_limits.resolve_joint_limits(robot)
     clamp_warned: set[str] = set()
+    overrun_warned = [False]
 
     dt = 1.0 / cfg.rate_hz
     total_t = period_s * cycles
@@ -546,7 +579,6 @@ def run_sweep(
             action_dict = {f"{m}.pos": float(val) for m in sweep_joints}
             action_dict = _clamp_and_warn(action_dict, limits_lo, limits_hi, clamp_warned)
             monitor.observe(action_dict)
-            monitor.observe_hardware(robot)
             if cfg.verbose:
                 logger.info("sweep step %d val=%.2f", n_steps, val)
             if cfg.execute:
@@ -557,9 +589,15 @@ def run_sweep(
                     rc = 7
                     break
             n_steps += 1
+
+            # Sampled AFTER send_action — see the note in run_policy.
+            monitor.observe_hardware(robot)
+
             slack = dt - (time.monotonic() - step_start)
             if slack > 0:
                 time.sleep(slack)
+            else:
+                _warn_loop_overrun(-slack, dt, overrun_warned)
     finally:
         if cfg.home_on_exit and cfg.execute:
             _home_on_exit(robot, sweep_joints, cfg)

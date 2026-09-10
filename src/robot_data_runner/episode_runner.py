@@ -50,8 +50,14 @@ from .mappers import (
     resolve_state_mapping,
 )
 from .policy_loader import LoadedPolicy, load_policy
-from .runner import _build_robot, _clamp_and_warn, _home_on_exit, _startup_safety_check
-from .safety import SafetyMonitor, require_interactive, attach_hardware_watchdog
+from .runner import (
+    _build_robot,
+    _clamp_and_warn,
+    _home_on_exit,
+    _startup_safety_check,
+    _warn_loop_overrun,
+)
+from .safety import SafetyMonitor, attach_hardware_watchdog, require_interactive
 from .task_specs import TaskSpec
 
 logger = logging.getLogger(__name__)
@@ -227,9 +233,7 @@ def run_episodes(
             try:
                 _prompt_reset(idx, reset_prompt)
             except KeyboardInterrupt:
-                logger.warning(
-                    "operator abort before episode %d started (reset prompt)", idx
-                )
+                logger.warning("operator abort before episode %d started (reset prompt)", idx)
                 monitor.stop_flag = True
                 records.append(
                     EpisodeRecord(
@@ -258,6 +262,7 @@ def run_episodes(
             # not once per whole eval run — a fault that recurs in a later
             # episode should still be surfaced.
             clamp_warned: set[str] = set()
+            overrun_warned = [False]
 
             ep_start = time.monotonic()
             success_in_loop = False
@@ -278,9 +283,7 @@ def run_episodes(
                         frame_manifest_rows.extend(rows)
                         frame_capture.write_manifest(save_frames_dir, frame_manifest_rows)
                     except Exception as exc:  # noqa: BLE001
-                        logger.warning(
-                            "save-frames: capture failed for episode %d: %s", idx, exc
-                        )
+                        logger.warning("save-frames: capture failed for episode %d: %s", idx, exc)
                     frame_captured = True
 
                 done, success_flag = task_spec.is_done(t_in_ep, obs)
@@ -310,7 +313,6 @@ def run_episodes(
 
                 action_dict = _clamp_and_warn(action_dict, limits_lo, limits_hi, clamp_warned)
                 monitor.observe(action_dict)
-                monitor.observe_hardware(robot)
                 if cfg.verbose:
                     logger.info(
                         "ep%d step action=%s",
@@ -325,9 +327,16 @@ def run_episodes(
                         interrupted = True
                         break
 
+                # Sampled AFTER send_action: a register read is a blocking serial
+                # round-trip, so sampling earlier would let bus latency delay a motor
+                # command that has already been computed.
+                monitor.observe_hardware(robot)
+
                 slack = dt - (time.monotonic() - step_start)
                 if slack > 0:
                     time.sleep(slack)
+                else:
+                    _warn_loop_overrun(-slack, dt, overrun_warned)
 
             ep_len = time.monotonic() - ep_start
 

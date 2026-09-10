@@ -24,6 +24,7 @@ must print a startup banner saying so (see ``runner._NO_ESTOP_BANNER``).
 from __future__ import annotations
 
 import logging
+import math
 import signal
 import sys
 from dataclasses import dataclass, field
@@ -122,6 +123,13 @@ def require_interactive(
 
 #: Conservative fallbacks, used only when a servo's protection registers cannot be
 #: read. Raw Feetech units (Protection_Current LSB ~= 6.5 mA) and degrees Celsius.
+#: Watchdog tuning defaults. Declared ONCE — they were previously duplicated as bare
+#: literals in SafetyMonitor.__init__, attach_hardware_watchdog's getattr fallbacks,
+#: RunnerConfig and four CLIs, and immediately drifted (the getattr fallback still said
+#: 15 after the others moved to 5). test_watchdog_defaults_agree_across_modules guards it.
+DEFAULT_HW_EVERY_N_STEPS: int = 5
+DEFAULT_HW_BREACH_STEPS: int = 3
+
 FALLBACK_PROTECTION_CURRENT_RAW: int = 250
 FALLBACK_MAX_TEMPERATURE_C: int = 70
 
@@ -229,8 +237,8 @@ class SafetyMonitor:
         epsilon: float = 1e-4,
         *,
         hw_limits: HardwareLimits | None = None,
-        hw_every_n_steps: int = 15,
-        hw_breach_steps: int = 3,
+        hw_every_n_steps: int = DEFAULT_HW_EVERY_N_STEPS,
+        hw_breach_steps: int = DEFAULT_HW_BREACH_STEPS,
     ) -> None:
         self.repeat_warn_steps = repeat_warn_steps
         self.epsilon = epsilon
@@ -253,6 +261,7 @@ class SafetyMonitor:
         self._breach_streak: dict[str, int] = {}
         self._read_failures = 0
         self._read_fail_warned = False
+        self._unguarded_warned: set[str] = set()
 
     # --- public API ---------------------------------------------------------
     def observe(self, action_dict: dict[str, float]) -> None:
@@ -273,28 +282,41 @@ class SafetyMonitor:
     def observe_hardware(self, robot: Any) -> None:
         """Sample joint current + temperature and trip ``stop_flag`` on sustained breach.
 
-        Call once per control step; the method self-throttles to every
-        ``hw_every_n_steps`` steps so it does not saturate the servo serial bus at
-        30 Hz (six register pairs per sample is a meaningful amount of traffic).
+        Call once per control step, **after** ``robot.send_action`` — never between
+        computing an action and writing it. A register read is a blocking serial
+        round-trip; placing it before the write would let bus latency delay a motor
+        command that has already been decided (found in adversarial review 2026-09-10).
 
-        A breach must persist for ``hw_breach_steps`` consecutive *samples* before it
-        trips, so a single transient spike from a legitimate fast move does not abort
-        an episode. When it does trip, ``stop_flag`` is set and :attr:`fault` carries
-        the reason — the caller stops at the next step boundary exactly as it does for
-        SIGINT, so the existing ramped-home-on-exit path still runs.
+        Batches via ``bus.sync_read`` — one packet per register across all motors
+        (2 round-trips), not one per motor-register pair (12). Falls back to per-motor
+        reads only if ``sync_read`` is unavailable.
+
+        Sampling self-throttles to every ``hw_every_n_steps`` steps. A breach must
+        persist ``hw_breach_steps`` consecutive *samples* before it trips, so a single
+        transient spike does not abort an episode; a healthy sample resets that motor's
+        streak. When it trips, ``stop_flag`` is set and :attr:`fault` carries the
+        reason — the caller stops at the next step boundary exactly as for SIGINT, so
+        ramped-home-on-exit still runs.
+
+        Every motor is evaluated on every sample even after one trips, so
+        :meth:`hardware_summary` reports a second straining servo rather than only the
+        first one found.
 
         Parameters
         ----------
         robot:
-            Duck-typed connected follower exposing ``robot.bus.motors`` and
-            ``robot.bus.read(register, motor)``.
+            Duck-typed connected follower exposing ``robot.bus``.
 
         Notes
         -----
-        Never raises. Register reads fail for mundane reasons (a busy bus, a dropped
-        packet); those are counted and warned about once, never propagated. A no-op
-        when :attr:`hw_limits` is ``None``, so existing callers that do not opt in are
-        completely unaffected.
+        Never raises. Register reads fail for mundane reasons (busy bus, dropped
+        packet); those are counted and warned about once, never propagated, and never
+        fabricate a fault. A no-op when :attr:`hw_limits` is ``None``.
+
+        ``normalize=False`` is passed explicitly: lerobot normalises only
+        ``Goal_Position`` / ``Present_Position``, so these registers are raw counts
+        either way, but stating it keeps the comparison against the raw
+        ``Protection_Current`` trip point unit-correct if that list ever grows.
         """
         if self.hw_limits is None or self.stop_flag:
             return
@@ -303,25 +325,39 @@ class SafetyMonitor:
         if self._hw_step % self.hw_every_n_steps != 0:
             return
 
-        try:
-            motors = list(robot.bus.motors)
-        except Exception:  # noqa: BLE001
-            self._note_read_failure()
+        currents = self._sample_register(robot, "Present_Current")
+        temps = self._sample_register(robot, "Present_Temperature")
+        if currents is None and temps is None:
             return
 
-        for name in motors:
-            cur = self._read_reg(robot, "Present_Current", name)
-            temp = self._read_reg(robot, "Present_Temperature", name)
-            if cur is None and temp is None:
-                continue
+        currents = currents or {}
+        temps = temps or {}
+        reasons: list[str] = []
+
+        for name in set(currents) | set(temps):
+            cur = currents.get(name)
+            temp = temps.get(name)
+
+            # NaN/Inf must not silently pass the > comparison as "healthy".
+            if cur is not None and not math.isfinite(cur):
+                cur = None
+            if temp is not None and not math.isfinite(temp):
+                temp = None
 
             if cur is not None:
-                self.peak_current_raw[name] = max(self.peak_current_raw.get(name, 0.0), cur)
+                self.peak_current_raw[name] = max(self.peak_current_raw.get(name, cur), cur)
             if temp is not None:
-                self.peak_temperature_c[name] = max(self.peak_temperature_c.get(name, 0.0), temp)
+                self.peak_temperature_c[name] = max(self.peak_temperature_c.get(name, temp), temp)
 
             cur_lim = self.hw_limits.current_raw.get(name)
             temp_lim = self.hw_limits.temperature_c.get(name)
+            if cur_lim is None and temp_lim is None and name not in self._unguarded_warned:
+                self._unguarded_warned.add(name)
+                logger.warning(
+                    "hardware watchdog: motor %r is being read but has NO trip point — "
+                    "it is unguarded this run",
+                    name,
+                )
 
             reason = None
             if cur is not None and cur_lim is not None and cur > cur_lim:
@@ -343,21 +379,45 @@ class SafetyMonitor:
 
             self._breach_streak[name] = self._breach_streak.get(name, 0) + 1
             if self._breach_streak[name] >= self.hw_breach_steps:
-                self.fault = reason
-                self.stop_flag = True
-                logger.error(
-                    "HARDWARE WATCHDOG TRIP after %d consecutive samples — %s. "
-                    "Stopping at next step boundary.",
+                reasons.append(reason)
+            else:
+                logger.warning(
+                    "hardware watchdog breach %d/%d — %s",
                     self._breach_streak[name],
+                    self.hw_breach_steps,
                     reason,
                 )
-                return
-            logger.warning(
-                "hardware watchdog breach %d/%d — %s",
-                self._breach_streak[name],
+
+        # Evaluate every motor first, THEN trip — so a second straining servo is
+        # recorded rather than hidden behind the first one found.
+        if reasons:
+            self.fault = "; ".join(reasons)
+            self.stop_flag = True
+            logger.error(
+                "HARDWARE WATCHDOG TRIP after %d consecutive samples — %s. "
+                "Stopping at next step boundary.",
                 self.hw_breach_steps,
-                reason,
+                self.fault,
             )
+
+    def _sample_register(self, robot: Any, register: str) -> dict[str, float] | None:
+        """Read *register* from every motor in as few bus round-trips as possible."""
+        try:
+            raw = robot.bus.sync_read(register, normalize=False)
+            return {k: float(v) for k, v in raw.items()}
+        except Exception:  # noqa: BLE001 — fall back to per-motor reads
+            pass
+        try:
+            motors = list(robot.bus.motors)
+        except Exception:  # noqa: BLE001
+            self._note_read_failure()
+            return None
+        out: dict[str, float] = {}
+        for name in motors:
+            val = self._read_reg(robot, register, name)
+            if val is not None:
+                out[name] = val
+        return out or None
 
     def hardware_summary(self) -> dict[str, Any]:
         """Peak current/temperature per motor plus any fault, for the run record."""
@@ -419,8 +479,8 @@ def attach_hardware_watchdog(monitor: SafetyMonitor, robot: Any, cfg: Any) -> No
     try:
         limits = resolve_hardware_limits(robot)
         monitor.hw_limits = limits
-        monitor.hw_every_n_steps = max(1, int(getattr(cfg, "hw_every_n_steps", 15)))
-        monitor.hw_breach_steps = max(1, int(getattr(cfg, "hw_breach_steps", 3)))
+        monitor.hw_every_n_steps = max(1, int(getattr(cfg, "hw_every_n_steps", DEFAULT_HW_EVERY_N_STEPS)))
+        monitor.hw_breach_steps = max(1, int(getattr(cfg, "hw_breach_steps", DEFAULT_HW_BREACH_STEPS)))
         if limits.resolved_from_hardware:
             logger.info(
                 "hardware watchdog armed — trip points read from the servos "

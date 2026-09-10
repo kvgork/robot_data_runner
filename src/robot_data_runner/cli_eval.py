@@ -99,8 +99,8 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--hw-every-n-steps",
         type=int,
-        default=15,
-        help="Sample joint current/temperature every N control steps (default 15 ~= 2 Hz at 30 Hz).",
+        default=5,
+        help="Sample joint current/temperature every N control steps (default 5 ~= 6 Hz at 30 Hz).",
     )
     p.add_argument(
         "--hw-breach-steps",
