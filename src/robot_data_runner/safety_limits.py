@@ -31,6 +31,10 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
+#: Joints already warned about for an inverted limit pair (clamp_action runs at
+#: control rate; one line per joint per process is enough to diagnose).
+_inverted_warned: set[str] = set()
+
 # Canonical SO-101 joint order (Feetech servo id 1..6). Matches
 # mappers.SO101_CANONICAL_MOTORS and the reference implementation in
 # lerobot_isaac_deploy.arm_motor_writer.
@@ -158,8 +162,35 @@ def resolve_joint_limits(
         # Intersect with the floor — cal-derived limits can only TIGHTEN,
         # never widen, the safe range (a symmetric +/-180 calibration must
         # not defeat the elbow_flex table-avoidance floor, for example).
-        lo[name] = max(lo[name], min(cal_lo, cal_hi))
-        hi[name] = min(hi[name], max(cal_lo, cal_hi))
+        new_lo = max(lo[name], min(cal_lo, cal_hi))
+        new_hi = min(hi[name], max(cal_lo, cal_hi))
+
+        if new_lo > new_hi:
+            # EMPTY intersection: the calibrated span lies entirely outside the
+            # floor. Writing that as lo > hi used to leak an inverted range to
+            # clamp_action, which swapped the pair and thereby permitted a window
+            # sitting wholly OUTSIDE the floor — e.g. cal (100, 150) deg against a
+            # (-90, 90) floor became an accepted [90, 100]. That is precisely the
+            # widening this function's contract forbids.
+            #
+            # There is no safe non-empty answer here, so take the conservative one:
+            # keep the hardcoded floor and make the disagreement loud. A calibration
+            # this far from the floor means the calibration is wrong, the joint is
+            # misidentified, or the floor is stale — all of which need a human.
+            logger.error(
+                "joint %r: calibrated range (%.1f, %.1f) deg does not intersect the "
+                "safety floor %s — the two disagree irreconcilably. Falling back to "
+                "the floor and IGNORING the calibration for this joint. Re-run "
+                "calibration or review the floor before driving the arm.",
+                name,
+                min(cal_lo, cal_hi),
+                max(cal_lo, cal_hi),
+                DEFAULT_JOINT_LIMITS_DEG[name],
+            )
+            continue
+
+        lo[name] = new_lo
+        hi[name] = new_hi
 
     return lo, hi
 
@@ -193,7 +224,28 @@ def clamp_action(
             continue
         lo_v, hi_v = lo[joint], hi[joint]
         if lo_v > hi_v:
-            lo_v, hi_v = hi_v, lo_v
+            # An inverted pair means the caller's limits are degenerate. The old
+            # behaviour swapped them, which turns "no valid range" into a
+            # permissive window that can sit entirely outside the safety floor.
+            # Fall back to this module's floor instead — never widen.
+            floor = DEFAULT_JOINT_LIMITS_DEG.get(joint)
+            if floor is not None:
+                lo_v, hi_v = floor
+            else:
+                # No floor to appeal to: collapse to a single point rather than
+                # opening a range. Pinning beats permitting.
+                lo_v = hi_v = min(lo_v, hi_v)
+            if joint not in _inverted_warned:
+                _inverted_warned.add(joint)
+                logger.error(
+                    "joint %r received an INVERTED limit pair (lo=%.1f > hi=%.1f) — "
+                    "this is a caller bug. Using the hardcoded floor %s instead of "
+                    "swapping, which would have permitted values outside it.",
+                    joint,
+                    lo[joint],
+                    hi[joint],
+                    floor if floor is not None else (lo_v, hi_v),
+                )
         clipped = min(max(value, lo_v), hi_v)
         if clipped != value and joint not in clamped:
             clamped.append(joint)

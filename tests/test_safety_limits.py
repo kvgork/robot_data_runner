@@ -275,3 +275,72 @@ def test_ramped_home_settle_timeout_does_not_raise():
     robot = _FakeHomeRobot({"shoulder_pan": 1000.0})
     # Should return (not raise) once settle_timeout_s elapses.
     ramped_home(robot, ["shoulder_pan"], max_step_deg=0.001, rate_hz=1000.0, settle_timeout_s=0.05)
+
+
+# ---------------------------------------------------------------------------
+# Empty cal-vs-floor intersection (NEXT_STEPS item 1, filed 2026-09-10)
+#
+# When a joint's calibrated span lies entirely outside the hardcoded floor, the
+# intersection is EMPTY. Expressing that as lo > hi and letting clamp_action swap
+# the pair converts "no valid range" into a permissive window sitting entirely
+# outside the floor — the module's own docstring promises calibration can only
+# TIGHTEN, never widen.
+# ---------------------------------------------------------------------------
+
+_ABOVE_FLOOR = _FakeCal(3200, 3600)  # ~101.2 deg .. ~136.4 deg, all above the +90 floor
+_BELOW_FLOOR = _FakeCal(400, 800)  # ~-144.8 deg .. ~-109.7 deg, all below the -90 floor
+
+
+def test_cal_entirely_above_floor_does_not_invert():
+    lo, hi = resolve_joint_limits(_FakeRobot(calibration={"shoulder_pan": _ABOVE_FLOOR}))
+    assert lo["shoulder_pan"] <= hi["shoulder_pan"], (
+        f"inverted range leaked out: lo={lo['shoulder_pan']} hi={hi['shoulder_pan']}"
+    )
+
+
+def test_cal_entirely_below_floor_does_not_invert():
+    lo, hi = resolve_joint_limits(_FakeRobot(calibration={"shoulder_pan": _BELOW_FLOOR}))
+    assert lo["shoulder_pan"] <= hi["shoulder_pan"]
+
+
+def test_empty_intersection_falls_back_to_the_floor():
+    """An irreconcilable calibration must yield the conservative floor, not a gap."""
+    lo, hi = resolve_joint_limits(_FakeRobot(calibration={"shoulder_pan": _ABOVE_FLOOR}))
+    assert (lo["shoulder_pan"], hi["shoulder_pan"]) == DEFAULT_JOINT_LIMITS_DEG["shoulder_pan"]
+
+
+def test_empty_intersection_is_logged_loudly(caplog):
+    with caplog.at_level("ERROR"):
+        resolve_joint_limits(_FakeRobot(calibration={"shoulder_pan": _ABOVE_FLOOR}))
+    assert any("shoulder_pan" in r.message for r in caplog.records), (
+        "an irreconcilable calibration must not be resolved silently"
+    )
+
+
+def test_resolved_limits_never_permit_a_command_outside_the_floor():
+    """End-to-end: the reported failure mode. 100 deg must not survive a 90 deg floor."""
+    robot = _FakeRobot(calibration={"shoulder_pan": _ABOVE_FLOOR})
+    lo, hi = resolve_joint_limits(robot)
+    out, clamped = clamp_action({"shoulder_pan.pos": 100.0}, lo, hi)
+    flo, fhi = DEFAULT_JOINT_LIMITS_DEG["shoulder_pan"]
+    assert flo <= out["shoulder_pan.pos"] <= fhi, (
+        f"command escaped the floor: {out['shoulder_pan.pos']} not in [{flo}, {fhi}]"
+    )
+    assert "shoulder_pan" in clamped
+
+
+def test_clamp_action_does_not_widen_on_a_hand_built_inverted_range():
+    """Defence in depth: even if a caller hands clamp_action an inverted pair."""
+    out, _ = clamp_action(
+        {"shoulder_pan.pos": 100.0}, {"shoulder_pan": 100.0}, {"shoulder_pan": 90.0}
+    )
+    flo, fhi = DEFAULT_JOINT_LIMITS_DEG["shoulder_pan"]
+    assert flo <= out["shoulder_pan.pos"] <= fhi
+
+
+def test_clamp_action_inverted_range_below_floor_also_contained():
+    out, _ = clamp_action(
+        {"shoulder_pan.pos": -150.0}, {"shoulder_pan": -90.0}, {"shoulder_pan": -150.0}
+    )
+    flo, fhi = DEFAULT_JOINT_LIMITS_DEG["shoulder_pan"]
+    assert flo <= out["shoulder_pan.pos"] <= fhi
