@@ -10,10 +10,13 @@ Public API:
   - :func:`load_policy`     — wrap ``lerobot.policies.factory.make_policy``.
   - :func:`obs_to_policy_input` / :func:`action_to_robot_dict`  — schema glue.
   - :class:`SafetyMonitor`  — stuck-action watchdog + repeat detector.
+  - :func:`require_interactive` / :class:`InteractiveRequiredError` — TTY gate
+    for any human-interlocked run path (S5 fix, 2026-08).
 
 CLI entrypoints:
   - ``robot-data-run``        full deploy loop
   - ``robot-data-run-check``  pre-flight: load + smoke-print one action
+  - ``robot-data-run-eval``   closed-loop multi-episode eval
 
 Soft-imports: ``lerobot``, ``torch``. Neither is required to ``import
 robot_data_runner`` itself — only at run/check call sites.
@@ -23,10 +26,10 @@ from __future__ import annotations
 
 from .config import RunnerConfig
 from .episode_runner import run_episodes
-from .policy_loader import load_policy
 from .mappers import action_to_robot_dict, obs_to_policy_input
-from .runner import run_policy
-from .safety import SafetyMonitor
+from .policy_loader import load_policy
+from .runner import run_policy, run_replay, run_sweep
+from .safety import InteractiveRequiredError, SafetyMonitor, require_interactive
 from .task_specs import (
     GripperAtTargetPoseSpec,
     PromptUserObserverSpec,
@@ -37,6 +40,8 @@ from .task_specs import (
 __all__ = [
     "RunnerConfig",
     "SafetyMonitor",
+    "InteractiveRequiredError",
+    "require_interactive",
     "TaskSpec",
     "GripperAtTargetPoseSpec",
     "PromptUserObserverSpec",
@@ -45,6 +50,8 @@ __all__ = [
     "obs_to_policy_input",
     "action_to_robot_dict",
     "run_policy",
+    "run_replay",
+    "run_sweep",
     "run_episodes",
     "__version__",
 ]

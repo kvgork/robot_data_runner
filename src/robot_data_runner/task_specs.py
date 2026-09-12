@@ -15,6 +15,15 @@ A third (``camera_object_detection``) is reserved for a future commit.
 
 All specs satisfy a tiny protocol; downstream code (``episode_runner``)
 only needs ``start_episode`` / ``is_done`` / ``on_episode_end``.
+
+S7 note (domain safety review, 2026-08): ``PromptUserObserverSpec.
+on_episode_end`` raises ``KeyboardInterrupt`` for BOTH the typed ``abort``
+command AND a closed stdin (``EOFError``) — the same mechanism, so
+``episode_runner`` only needs one code path to detect an operator abort.
+Previously, ``EOFError`` was caught and silently treated as ``"n"``,
+fabricating a real FAIL for every episode under a detached/non-interactive
+run (nohup/setsid/a pipe). ``episode_runner`` records this distinctly as an
+ABORTED outcome, excluded from the success-rate denominator.
 """
 
 from __future__ import annotations
@@ -39,9 +48,7 @@ class TaskSpec(Protocol):
         - ``success`` is recorded only when ``done`` is True; ignored otherwise.
         """
 
-    def on_episode_end(
-        self, idx: int, success: bool, ep_len_s: float
-    ) -> bool:
+    def on_episode_end(self, idx: int, success: bool, ep_len_s: float) -> bool:
         """Finalise scoring after the step loop exits.
 
         For manual-observer specs this is where stdin prompting happens.
@@ -53,6 +60,7 @@ class TaskSpec(Protocol):
 # ---------------------------------------------------------------------------
 # PromptUserObserverSpec
 # ---------------------------------------------------------------------------
+
 
 @dataclass
 class PromptUserObserverSpec:
@@ -73,9 +81,17 @@ class PromptUserObserverSpec:
     def on_episode_end(self, idx: int, success: bool, ep_len_s: float) -> bool:  # noqa: ARG002
         text = self.prompt_text.format(idx=idx)
         try:
-            ans = input(text).strip().lower()
-        except EOFError:
-            ans = "n"
+            raw = input(text)
+        except EOFError as exc:
+            # S5/S7 fix: a closed stdin (detached/non-interactive run) must
+            # NEVER be silently scored "n" — that fabricates a real FAIL.
+            # Reuse the exact same abort mechanism as the typed "abort"
+            # command below so episode_runner has one code path to detect it.
+            raise KeyboardInterrupt(
+                f"operator abort: stdin closed during verdict prompt for "
+                f"episode {idx} — refusing to fabricate a pass/fail verdict"
+            ) from exc
+        ans = raw.strip().lower()
         if ans == "abort":
             raise KeyboardInterrupt("operator abort")
         return ans.startswith("y")
@@ -125,7 +141,7 @@ class GripperAtTargetPoseSpec:
             return True, False
         if len(self.joint_order) != len(self.target_joint_pos):
             return False, False
-        for name, tgt in zip(self.joint_order, self.target_joint_pos):
+        for name, tgt in zip(self.joint_order, self.target_joint_pos, strict=True):
             key = f"{name}.pos"
             if key not in obs:
                 return False, False
@@ -154,7 +170,5 @@ _REGISTRY = {
 def make_task_spec(type_: str, **kwargs: Any) -> TaskSpec:
     """Build a task spec by type name. Raises KeyError on unknown type."""
     if type_ not in _REGISTRY:
-        raise KeyError(
-            f"unknown task spec type {type_!r}; available: {list(_REGISTRY)}"
-        )
+        raise KeyError(f"unknown task spec type {type_!r}; available: {list(_REGISTRY)}")
     return _REGISTRY[type_](**kwargs)

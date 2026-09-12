@@ -8,6 +8,8 @@ from __future__ import annotations
 import io
 from unittest.mock import patch
 
+import pytest
+
 
 def test_prompt_user_observer_timeout():
     from robot_data_runner.task_specs import PromptUserObserverSpec
@@ -31,6 +33,33 @@ def test_prompt_user_observer_score_n(monkeypatch):
     spec = PromptUserObserverSpec()
     monkeypatch.setattr("builtins.input", lambda *_: "n")
     assert spec.on_episode_end(0, True, 5.0) is False
+
+
+def test_prompt_user_observer_typed_abort_raises_keyboard_interrupt(monkeypatch):
+    from robot_data_runner.task_specs import PromptUserObserverSpec
+
+    spec = PromptUserObserverSpec()
+    monkeypatch.setattr("builtins.input", lambda *_: "abort")
+    with pytest.raises(KeyboardInterrupt):
+        spec.on_episode_end(0, True, 5.0)
+
+
+def test_prompt_user_observer_eof_raises_keyboard_interrupt_not_fabricated_fail(monkeypatch):
+    """S5/S7: a closed stdin (EOFError) during the verdict prompt must NOT be
+    silently scored "n" (a fabricated real FAIL). It must raise
+    KeyboardInterrupt — the exact same abort mechanism as the typed "abort"
+    command above — so episode_runner has one code path to detect it and
+    record a distinct ABORTED outcome instead of a fail.
+    """
+    from robot_data_runner.task_specs import PromptUserObserverSpec
+
+    def _raise_eof(*_a):
+        raise EOFError
+
+    spec = PromptUserObserverSpec()
+    monkeypatch.setattr("builtins.input", _raise_eof)
+    with pytest.raises(KeyboardInterrupt):
+        spec.on_episode_end(0, True, 5.0)
 
 
 def test_gripper_at_target_pose_match():
@@ -97,3 +126,26 @@ def test_cli_eval_parser_builds():
     assert args.n_episodes == 5
     assert args.task_spec == "prompt_user_observer"
     assert args.i_have_read_the_safety_runbook is True
+
+
+def test_cli_eval_parser_has_save_frames_and_opt_out_flags():
+    """New flags for C1 (--save-frames) and S5 (--i-am-not-driving-an-arm)."""
+    from robot_data_runner.cli_eval import _build_parser
+
+    parser = _build_parser()
+    args = parser.parse_args([
+        "--policy-path", "/tmp/p",
+        "--save-frames", "/tmp/frames",
+        "--i-am-not-driving-an-arm",
+        "--i-have-read-the-safety-runbook",
+    ])
+    assert args.save_frames == "/tmp/frames"
+    assert args.i_am_not_driving_an_arm is True
+
+    # both default off
+    args_default = parser.parse_args([
+        "--policy-path", "/tmp/p",
+        "--i-have-read-the-safety-runbook",
+    ])
+    assert args_default.save_frames is None
+    assert args_default.i_am_not_driving_an_arm is False
