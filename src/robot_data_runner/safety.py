@@ -464,6 +464,83 @@ class SafetyMonitor:
         return all(abs(a[k] - b[k]) < self.epsilon for k in a)
 
 
+def _release_all_torque(robot: Any) -> tuple[list[str], list[str]]:
+    """Best-effort ``Torque_Enable = 0`` on every motor. Never raises.
+
+    Returns ``(released, failed)`` motor-name lists. Motors that were already off
+    are still written — cheaper than reading first, and a redundant write to an
+    already-limp servo is harmless.
+    """
+    released: list[str] = []
+    failed: list[str] = []
+    try:
+        motors = list(robot.bus.motors)
+    except Exception:  # noqa: BLE001 — no reachable bus; nothing we can do
+        return released, failed
+
+    for name in motors:
+        for attempt in (1, 2, 3):
+            try:
+                try:
+                    robot.bus.write("Torque_Enable", name, 0, normalize=False, num_retry=3)
+                except TypeError:
+                    # Older/duck-typed buses without the keyword arguments.
+                    robot.bus.write("Torque_Enable", name, 0)
+                released.append(name)
+                break
+            except Exception:  # noqa: BLE001
+                if attempt == 3:
+                    failed.append(name)
+    return released, failed
+
+
+def safe_connect(robot: Any, **kwargs: Any) -> None:
+    """``robot.connect(**kwargs)``, releasing torque if it fails part-way.
+
+    Why this exists (observed on real hardware 2026-09-11). lerobot's
+    ``MotorsBus.write()`` defaults to ``num_retry=0`` and ``SO101Follower.connect()``
+    -> ``configure()`` writes several registers per motor. A single dropped status
+    packet therefore aborts the connect mid-sweep::
+
+        ConnectionError: Failed to write 'Torque_Enable' on id_=4 with '1' after 1
+        tries. [TxRxResult] There is no status packet!
+
+    Servos visited before the failure are already ENERGISED. Because the exception
+    escapes ``connect()``, a caller whose ``disconnect()`` sits in a ``try/finally``
+    *after* the connect call never runs it, and the arm is left holding position with
+    no live session and nothing watching it. Observed live: servos 1-3 energised,
+    4-6 not, all six otherwise healthy.
+
+    This wrapper closes that window: on ANY failure it sweeps ``Torque_Enable = 0``
+    across every reachable motor, logs what it managed to release, then re-raises the
+    original exception unchanged so the caller still sees why the connect failed.
+
+    ``BaseException`` is caught deliberately, not ``Exception`` — an operator pressing
+    Ctrl-C while the arm is energising is exactly when torque most needs dropping.
+
+    Raises
+    ------
+    BaseException
+        Whatever ``robot.connect`` raised, re-raised with its traceback intact. The
+        release sweep never raises on its own and never masks the original error.
+    """
+    try:
+        robot.connect(**kwargs)
+    except BaseException as exc:
+        released, failed = _release_all_torque(robot)
+        logger.error(
+            "robot.connect() failed part-way (%s: %s). Servos visited before the "
+            "failure may have been left ENERGISED, so torque was swept off: "
+            "released=%s failed=%s. If any motor is in the failed list, CUT POWER — "
+            "it may still be holding.",
+            type(exc).__name__,
+            exc,
+            released or "none",
+            failed or "none",
+        )
+        raise
+
+
 def attach_hardware_watchdog(monitor: SafetyMonitor, robot: Any, cfg: Any) -> None:
     """Resolve trip points off the connected arm and arm the watchdog on *monitor*.
 
@@ -479,8 +556,12 @@ def attach_hardware_watchdog(monitor: SafetyMonitor, robot: Any, cfg: Any) -> No
     try:
         limits = resolve_hardware_limits(robot)
         monitor.hw_limits = limits
-        monitor.hw_every_n_steps = max(1, int(getattr(cfg, "hw_every_n_steps", DEFAULT_HW_EVERY_N_STEPS)))
-        monitor.hw_breach_steps = max(1, int(getattr(cfg, "hw_breach_steps", DEFAULT_HW_BREACH_STEPS)))
+        monitor.hw_every_n_steps = max(
+            1, int(getattr(cfg, "hw_every_n_steps", DEFAULT_HW_EVERY_N_STEPS))
+        )
+        monitor.hw_breach_steps = max(
+            1, int(getattr(cfg, "hw_breach_steps", DEFAULT_HW_BREACH_STEPS))
+        )
         if limits.resolved_from_hardware:
             logger.info(
                 "hardware watchdog armed — trip points read from the servos "

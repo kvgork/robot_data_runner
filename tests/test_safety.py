@@ -97,8 +97,7 @@ class _FakeBus:
             raise RuntimeError("bus timeout")
         assert normalize is False, "watchdog must read raw counts, not normalized"
         return {
-            m: self.per_motor_current.get((register, m), self._vals[register])
-            for m in self.motors
+            m: self.per_motor_current.get((register, m), self._vals[register]) for m in self.motors
         }
 
 
@@ -442,3 +441,169 @@ def test_zero_protection_current_still_yields_a_usable_trip_point():
     """
     lim = safety.resolve_hardware_limits(_FakeRobot(protection=0.0))
     assert lim.current_raw["gripper"] > 0.0
+
+
+# ---------------------------------------------------------------------------
+# safe_connect — partial-torque-on-connect-failure (NEXT_STEPS item 0)
+#
+# Observed on real hardware 2026-09-11: lerobot's MotorsBus.write() defaults to
+# num_retry=0, so one dropped status packet aborts SO101Follower.connect()
+# mid-configure. Servos already visited are left ENERGISED, the exception escapes
+# connect(), and a caller whose disconnect() sits in a try/finally AFTER the connect
+# call never runs it — the arm holds position with no live session.
+# ---------------------------------------------------------------------------
+
+
+class _PartialConnectBus:
+    """Bus whose connect enables torque motor-by-motor then fails partway."""
+
+    def __init__(self, fail_at_index=3, release_fails=False):
+        self.motors = [
+            "shoulder_pan",
+            "shoulder_lift",
+            "elbow_flex",
+            "wrist_flex",
+            "wrist_roll",
+            "gripper",
+        ]
+        self.torque = dict.fromkeys(self.motors, 0)
+        self.fail_at_index = fail_at_index
+        self.release_fails = release_fails
+        self.release_attempts = []
+
+    def write(self, register, motor, value, **kw):
+        if register != "Torque_Enable":
+            return
+        if value == 0:
+            self.release_attempts.append(motor)
+            if self.release_fails:
+                raise RuntimeError("bus timeout on release")
+        self.torque[motor] = value
+
+    def read(self, register, motor, **kw):
+        if register == "Torque_Enable":
+            return self.torque[motor]
+        raise KeyError(register)
+
+
+class _PartialConnectRobot:
+    def __init__(self, **kw):
+        self.bus = _PartialConnectBus(**kw)
+        self.disconnect_called = False
+
+    def connect(self, calibrate=True):
+        for i, m in enumerate(self.bus.motors):
+            if i == self.bus.fail_at_index:
+                raise ConnectionError(
+                    f"Failed to write 'Torque_Enable' on id_={i + 1} with '1' after 1 tries. "
+                    "[TxRxResult] There is no status packet!"
+                )
+            self.bus.write("Torque_Enable", m, 1)
+
+    def disconnect(self):
+        self.disconnect_called = True
+
+
+def test_partial_connect_leaves_torque_on_without_the_guard():
+    """Characterise the bug: raw connect() energises some servos then raises."""
+    r = _PartialConnectRobot()
+    with pytest.raises(ConnectionError):
+        r.connect()
+    assert sum(r.bus.torque.values()) == 3, "expected 3 servos left energised"
+
+
+def test_safe_connect_releases_torque_on_partial_failure():
+    r = _PartialConnectRobot()
+    with pytest.raises(ConnectionError):
+        safety.safe_connect(r)
+    assert sum(r.bus.torque.values()) == 0, (
+        f"servos left energised after a failed connect: {r.bus.torque}"
+    )
+
+
+def test_safe_connect_reraises_the_original_error():
+    """The release sweep must not mask why the connect failed."""
+    r = _PartialConnectRobot()
+    with pytest.raises(ConnectionError, match="no status packet"):
+        safety.safe_connect(r)
+
+
+def test_safe_connect_attempts_release_on_every_motor():
+    """Release must not stop at the first motor, nor skip ones never energised."""
+    r = _PartialConnectRobot()
+    with pytest.raises(ConnectionError):
+        safety.safe_connect(r)
+    assert set(r.bus.release_attempts) == set(r.bus.motors)
+
+
+def test_safe_connect_survives_a_failing_release():
+    """A bus too sick to release must still surface the ORIGINAL connect error."""
+    r = _PartialConnectRobot(release_fails=True)
+    with pytest.raises(ConnectionError, match="no status packet"):
+        safety.safe_connect(r)
+
+
+def test_safe_connect_is_a_passthrough_on_success():
+    class _OK:
+        def __init__(self):
+            self.connected = False
+            self.kwargs = None
+
+        def connect(self, calibrate=True):
+            self.connected = True
+            self.kwargs = {"calibrate": calibrate}
+
+    r = _OK()
+    safety.safe_connect(r, calibrate=False)
+    assert r.connected is True
+    assert r.kwargs == {"calibrate": False}
+
+
+def test_safe_connect_never_raises_from_a_garbage_robot():
+    """A robot with no bus at all: the original error still wins."""
+
+    class _NoBus:
+        def connect(self, calibrate=True):
+            raise RuntimeError("boom")
+
+    with pytest.raises(RuntimeError, match="boom"):
+        safety.safe_connect(_NoBus())
+
+
+def test_no_entry_point_calls_robot_connect_directly():
+    """Canary: every run path must go through safe_connect.
+
+    A bare ``robot.connect()`` re-opens the partial-torque window this wrapper
+    exists to close, and does so silently — the arm is left energised only when a
+    packet happens to drop, so tests and normal runs would never show it. Counting
+    the call sites mechanically beats trusting a cited line number, which goes stale
+    the moment either file is next edited.
+    """
+    import pathlib
+    import re
+
+    pkg = pathlib.Path(safety.__file__).parent
+    offenders = []
+    for path in pkg.glob("*.py"):
+        if path.name == "safety.py":
+            continue  # safe_connect itself must call robot.connect(**kwargs)
+        for n, raw in enumerate(path.read_text().splitlines(), 1):
+            # Strip string literals and comments first: a log message that MENTIONS
+            # robot.connect() is not a call site. (This canary's first version
+            # flagged its own error strings.)
+            line = re.sub(r'"[^"]*"|\'[^\']*\'', '""', raw).split("#", 1)[0]
+            if re.search(r"(?<!safe_)\brobot\.connect\s*\(", line):
+                offenders.append(f"{path.name}:{n}: {raw.strip()}")
+    assert not offenders, (
+        "these call robot.connect() directly instead of safety.safe_connect():\n  "
+        + "\n  ".join(offenders)
+    )
+
+
+def test_safe_connect_is_actually_wired_into_the_run_paths():
+    """The mirror of the canary: the guarded call must be present, not just absent."""
+    import pathlib
+
+    pkg = pathlib.Path(safety.__file__).parent
+    wired = {path.name for path in pkg.glob("*.py") if "safe_connect(robot)" in path.read_text()}
+    assert {"runner.py", "episode_runner.py"} <= wired, f"only wired in: {wired}"

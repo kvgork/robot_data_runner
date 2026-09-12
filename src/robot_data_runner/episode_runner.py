@@ -57,7 +57,7 @@ from .runner import (
     _startup_safety_check,
     _warn_loop_overrun,
 )
-from .safety import SafetyMonitor, attach_hardware_watchdog, require_interactive
+from .safety import SafetyMonitor, attach_hardware_watchdog, require_interactive, safe_connect
 from .task_specs import TaskSpec
 
 logger = logging.getLogger(__name__)
@@ -185,7 +185,9 @@ def run_episodes(
     robot = _build_robot(cfg)
     monitor = SafetyMonitor(repeat_warn_steps=cfg.repeat_warn_steps)
     monitor.install_signal_handlers()
-    robot.connect()
+    # safe_connect: a mid-configure failure must not leave servos energised
+    # with no live session (see safety.safe_connect).
+    safe_connect(robot)
 
     attach_hardware_watchdog(monitor, robot, cfg)
     motor_names = list(robot.bus.motors)

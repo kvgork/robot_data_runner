@@ -19,7 +19,7 @@ from . import safety_limits
 from .config import RunnerConfig
 from .mappers import action_to_robot_dict, obs_to_policy_input, resolve_state_mapping
 from .policy_loader import LoadedPolicy, load_policy
-from .safety import SafetyMonitor, attach_hardware_watchdog
+from .safety import SafetyMonitor, attach_hardware_watchdog, safe_connect
 
 logger = logging.getLogger(__name__)
 
@@ -219,8 +219,9 @@ def run_policy(cfg: RunnerConfig, loaded: LoadedPolicy | None = None) -> int:
     monitor.install_signal_handlers()
 
     try:
-        robot.connect()
+        safe_connect(robot)
     except Exception as exc:  # noqa: BLE001
+        # safe_connect has already swept torque off and logged what it released.
         logger.error("robot.connect() failed — is the arm plugged in? %s", exc)
         return 4
 
@@ -405,8 +406,9 @@ def run_replay(cfg: RunnerConfig) -> int:
     monitor = SafetyMonitor(repeat_warn_steps=cfg.repeat_warn_steps)
     monitor.install_signal_handlers()
     try:
-        robot.connect()
+        safe_connect(robot)
     except Exception as exc:  # noqa: BLE001
+        # safe_connect has already swept torque off and logged what it released.
         logger.error("robot.connect() failed — is the arm plugged in? %s", exc)
         return 4
 
@@ -537,8 +539,9 @@ def run_sweep(
     monitor = SafetyMonitor(repeat_warn_steps=cfg.repeat_warn_steps)
     monitor.install_signal_handlers()
     try:
-        robot.connect()
+        safe_connect(robot)
     except Exception as exc:  # noqa: BLE001
+        # safe_connect has already swept torque off and logged what it released.
         logger.error("robot.connect() failed — is the arm plugged in? %s", exc)
         return 4
 
