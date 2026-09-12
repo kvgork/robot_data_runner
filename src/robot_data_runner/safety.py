@@ -265,6 +265,21 @@ class SafetyMonitor:
 
     # --- public API ---------------------------------------------------------
     def observe(self, action_dict: dict[str, float]) -> None:
+        bad = [k for k, v in action_dict.items() if not math.isfinite(v)]
+        if bad and not self.stop_flag:
+            # A non-finite action is never valid, and waiting repeat_warn_steps for
+            # the stuck-action warning means ~1 s of garbage commands first. Stop now.
+            # This is also the load-bearing guard: clamp_action contains infinities
+            # but CANNOT contain NaN (every comparison with NaN is False), so without
+            # this a NaN reaches send_action.
+            self.fault = (
+                f"policy emitted a non-finite action for {sorted(bad)} — values must "
+                f"be finite; refusing to drive the arm on garbage"
+            )
+            self.stop_flag = True
+            logger.error("NON-FINITE ACTION — %s. Stopping at next step boundary.", self.fault)
+            return
+
         if self._last is not None and self._same(self._last, action_dict):
             self._streak += 1
             if self._streak == self.repeat_warn_steps and not self._warned:
@@ -461,7 +476,22 @@ class SafetyMonitor:
     def _same(self, a: dict[str, float], b: dict[str, float]) -> bool:
         if set(a) != set(b):
             return False
-        return all(abs(a[k] - b[k]) < self.epsilon for k in a)
+        return all(self._close(a[k], b[k]) for k in a)
+
+    def _close(self, x: float, y: float) -> bool:
+        """Epsilon comparison that treats two non-finite values as unchanged.
+
+        ``abs(nan - nan) < eps`` is False, because every comparison involving NaN is
+        False. That made a policy emitting a CONSTANT NaN look like it changed on
+        every single step, so the streak reset forever and the stuck-action warning —
+        whose own text says "policy may be stuck or returning NaN" — could never fire
+        for the NaN half of its own claim.
+        """
+        x_bad, y_bad = not math.isfinite(x), not math.isfinite(y)
+        if x_bad or y_bad:
+            # Both non-finite -> unchanged. One of each -> genuinely different.
+            return x_bad and y_bad
+        return abs(x - y) < self.epsilon
 
 
 def _release_all_torque(robot: Any) -> tuple[list[str], list[str]]:

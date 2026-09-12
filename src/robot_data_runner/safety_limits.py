@@ -26,6 +26,7 @@ to a hardcoded safety floor. Never raises on malformed/missing calibration.
 from __future__ import annotations
 
 import logging
+import math
 import time
 from typing import Any
 
@@ -246,7 +247,21 @@ def clamp_action(
                     hi[joint],
                     floor if floor is not None else (lo_v, hi_v),
                 )
-        clipped = min(max(value, lo_v), hi_v)
+        if math.isnan(value):
+            # min/max cannot contain NaN — every comparison with NaN is False, so
+            # `min(max(nan, lo), hi)` returns nan and the value reaches send_action.
+            # Worse, `clipped != value` is True for NaN, so it was REPORTED as
+            # clamped while not being clamped. Substitute the in-range value nearest
+            # zero (the neutral pose in both unit systems) deterministically.
+            # This is a last resort: the real defence is SafetyMonitor.observe(),
+            # which stops the run before the next send.
+            #
+            # NaN ONLY. Infinities clamp correctly on their own (min(max(inf,lo),hi)
+            # == hi), and routing them here instead would replace a correct bound
+            # with 0 — a needless commanded move.
+            clipped = min(max(0.0, lo_v), hi_v)
+        else:
+            clipped = min(max(value, lo_v), hi_v)
         if clipped != value and joint not in clamped:
             clamped.append(joint)
         out[key] = clipped

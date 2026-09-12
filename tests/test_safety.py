@@ -607,3 +607,75 @@ def test_safe_connect_is_actually_wired_into_the_run_paths():
     pkg = pathlib.Path(safety.__file__).parent
     wired = {path.name for path in pkg.glob("*.py") if "safe_connect(robot)" in path.read_text()}
     assert {"runner.py", "episode_runner.py"} <= wired, f"only wired in: {wired}"
+
+
+# ---------------------------------------------------------------------------
+# Non-finite actions (NEXT_STEPS item 2, widened 2026-09-12)
+#
+# Filed as "_same() can never flag a constant-NaN action". Investigating it found
+# two worse siblings: a NaN action passes straight THROUGH clamp_action to
+# send_action, and is reported in the clamped list while not being clamped
+# (nan != nan makes the "did I change it" check true). NaN must never reach a servo.
+# ---------------------------------------------------------------------------
+
+NAN = float("nan")
+INF = float("inf")
+
+
+def test_same_treats_two_nans_as_unchanged():
+    """abs(nan-nan) < eps is False, so a constant-NaN stream reset the streak forever."""
+    m = safety.SafetyMonitor()
+    a = {"shoulder_pan.pos": NAN}
+    assert m._same(a, dict(a)) is True
+
+
+def test_constant_nan_accumulates_a_streak():
+    """The stuck-action warning's own text names NaN; it must be reachable."""
+    m = safety.SafetyMonitor(repeat_warn_steps=3)
+    for _ in range(5):
+        m.observe({"shoulder_pan.pos": NAN})
+    assert m._streak >= 3, f"streak never accumulated: {m._streak}"
+
+
+def test_same_still_distinguishes_nan_from_a_real_value():
+    m = safety.SafetyMonitor()
+    assert m._same({"a.pos": NAN}, {"a.pos": 1.0}) is False
+    assert m._same({"a.pos": 1.0}, {"a.pos": NAN}) is False
+
+
+def test_observe_trips_stop_flag_on_a_non_finite_action():
+    """A NaN action is never valid — stop, do not wait 30 steps for a warning."""
+    for bad in (NAN, INF, -INF):
+        m = safety.SafetyMonitor()
+        m.observe({"shoulder_pan.pos": bad})
+        assert m.stop_flag is True, f"{bad} did not trip the monitor"
+        assert m.fault is not None and "finite" in m.fault.lower()
+
+
+def test_observe_does_not_trip_on_normal_actions():
+    m = safety.SafetyMonitor()
+    for v in (0.0, -90.0, 90.0, 1e-9):
+        m.observe({"shoulder_pan.pos": v})
+    assert m.stop_flag is False
+    assert m.fault is None
+
+
+def test_clamp_action_contains_a_non_finite_value():
+    """The absolute joint clamp must not pass NaN through to send_action."""
+    from robot_data_runner.safety_limits import clamp_action, resolve_joint_limits
+
+    lo, hi = resolve_joint_limits(None)
+    out, clamped = clamp_action({"shoulder_pan.pos": NAN}, lo, hi)
+    v = out["shoulder_pan.pos"]
+    assert v == v, "NaN survived the clamp"
+    assert lo["shoulder_pan"] <= v <= hi["shoulder_pan"]
+    assert "shoulder_pan" in clamped
+
+
+def test_clamp_action_contains_infinities():
+    from robot_data_runner.safety_limits import clamp_action, resolve_joint_limits
+
+    lo, hi = resolve_joint_limits(None)
+    out, _ = clamp_action({"shoulder_pan.pos": INF, "elbow_flex.pos": -INF}, lo, hi)
+    assert out["shoulder_pan.pos"] == hi["shoulder_pan"]
+    assert out["elbow_flex.pos"] == lo["elbow_flex"]
